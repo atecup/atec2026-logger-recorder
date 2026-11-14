@@ -1,0 +1,1 @@
+^/(global_pose|cmd_vel|joint_states|robot_state|nav_state|motion_state|grasp_state|manipulation_state|points_downsampled_[^/]+|image_compressed_[^/]+)$
