@@ -19,15 +19,17 @@ robotlogger-recorder/
 - SSD已挂载。若录制目录没有写权限，脚本会提示使用sudo。
 
 ## 检查与录制
-将整个robotlogger-recorder目录复制到SSD，例如"/mnt/robot-ssd/robotlogger-recorder"，然后运行：
-cd /mnt/robot-ssd/robotlogger-recorder
+将整个robotlogger-recorder目录复制到机器人任意可访问的位置，然后运行：
+cd /path/to/robotlogger-recorder
 deployment/robotlogger.sh check
 deployment/robotlogger.sh
 
-脚本会发现ROS2安装和可用的RMW，检查SSD、空间和合同topic，如果ROS发行版、DDS domain、SSD挂载位置或自定义接口路径无法唯一判断，会在终端说明并提示补充。补充项保存在当前用户的 `~/.config/robotlogger/robotlogger.conf`，下次运行会复用。
+脚本会发现ROS2安装和可用的RMW，并检查SSD、空间和合同topic。首次运行时会提示确认ROS_DOMAIN_ID、SSD挂载目录和rosbag写入目录；例如可将挂载目录设为 `/mnt/robot-ssd`，写入目录设为 `/mnt/robot-ssd/rosbags`。robotlogger-recorder本身可以放在SSD以外的任意目录。提示项保存在当前用户的 `~/.config/robotlogger/robotlogger.conf`，下次运行会复用；需要改变时可编辑该文件或通过命令行参数覆盖。
 
 固定名称的合同 topic（如 `/cmd_vel`、`/global_pose`）即使尚未启动，也不会让 `check` 失败；rosbag2 会每秒等待并订阅它们。topic 暂停时 bag 保持运行，同名、同类型且 QoS 兼容的 publisher 恢复后会继续收到消息。带设备 ID 的点云/图像 topic 若还未发布，脚本会提示输入完整名称并保存；也可用重复的 `--topic` 参数指定，例如 `deployment/robotlogger.sh record --topic /points_downsampled_mid360 --topic /image_compressed_front`。如果迟启动的状态 topic 使用自定义消息类型，首次提示时提供 adapter 的 `install/setup.bash`。
 
-默认bag目录为：
-<SSD挂载点>/rosbags/<机器人主机名>/<UTC时间>-<进程号>
+bag目录为：
+<用户指定的SSD写入目录>/<机器人主机名>/<本地时间>
+
+时间目录格式为 `YYYY_MMDD_HH_MM`，例如 `2026_1114_15_54`。同一分钟内重复启动时会自动追加 `_02`、`_03` 等编号，避免覆盖已有bag。
 开始录制后按 "Ctrl-C" 正常结束并等待 rosbag2 完成收尾。

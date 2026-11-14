@@ -114,6 +114,10 @@ if [[ -r "${config_path}" ]]; then
   # shellcheck disable=SC1090
   source "${config_path}"
 fi
+domain_was_configured=0
+if [[ -n "${cli_domain}" ]] || { [[ -r "${config_path}" ]] && grep -Eq '^[[:space:]]*ROS_DOMAIN_ID=' "${config_path}"; }; then
+  domain_was_configured=1
+fi
 ROBOT_ID="${cli_robot_id:-${ROBOT_ID:-}}"
 ROS_SETUP="${cli_ros_setup:-${ROS_SETUP:-}}"
 ROS_WORKSPACE_SETUP="${cli_workspace:-${ROS_WORKSPACE_SETUP:-}}"
@@ -138,6 +142,14 @@ fi
 if [[ -z "${ROS_DOMAIN_ID}" ]]; then
   if (( is_g1 )); then ROS_DOMAIN_ID=1; else ROS_DOMAIN_ID=0; fi
 fi
+if (( ! domain_was_configured && interactive )); then
+  ROS_DOMAIN_ID="$(prompt_value ROS_DOMAIN_ID "ROS_DOMAIN_ID（回车使用默认值）" "${ROS_DOMAIN_ID}")" || exit 70
+  save_config_value ROS_DOMAIN_ID "${ROS_DOMAIN_ID}"
+fi
+[[ "${ROS_DOMAIN_ID}" =~ ^[0-9]+$ ]] && (( ROS_DOMAIN_ID <= 232 )) || {
+  echo "ROS_DOMAIN_ID must be an integer from 0 to 232." >&2
+  exit 64
+}
 if [[ -n "${ROS_SETUP}" && -r "${ROS_SETUP}" ]] && ! is_ros2_setup "${ROS_SETUP}"; then
   echo "Configured ROS setup is not ROS 2: ${ROS_SETUP}" >&2
   ROS_SETUP=""
@@ -183,18 +195,21 @@ if [[ -z "${SSD_MOUNT}" ]]; then
   if command -v mountpoint >/dev/null 2>&1 && mountpoint -q /mnt/robot-ssd; then
     SSD_MOUNT=/mnt/robot-ssd
   else
-    SSD_MOUNT="$(findmnt -n -o TARGET -T "${project_dir}" 2>/dev/null || true)"
+    SSD_MOUNT=""
   fi
 fi
-if [[ -z "${SSD_MOUNT}" || "${SSD_MOUNT}" == "/" ]]; then
-  SSD_MOUNT="$(prompt_value SSD_MOUNT "SSD 当前挂载目录" "/mnt/robot-ssd")" || exit 74
+if [[ -z "${SSD_MOUNT}" ]]; then
+  SSD_MOUNT="$(prompt_value SSD_MOUNT "SSD 挂载目录（例如 /mnt/robot-ssd）" "/mnt/robot-ssd")" || exit 74
+  save_config_value SSD_MOUNT "${SSD_MOUNT}"
 fi
 if command -v mountpoint >/dev/null 2>&1 && ! mountpoint -q "${SSD_MOUNT}"; then
-  SSD_MOUNT="$(prompt_value SSD_MOUNT "SSD 已挂载的目录（需先完成挂载）" "${SSD_MOUNT}")" || exit 74
-  save_config_value SSD_MOUNT "${SSD_MOUNT}"
-  mountpoint -q "${SSD_MOUNT}" || { echo "${SSD_MOUNT} 不是已挂载的文件系统；请先挂载 SSD 后重试." >&2; exit 74; }
+  echo "${SSD_MOUNT} 不是已挂载的文件系统；请先挂载 SSD 后重试." >&2
+  exit 74
 fi
-if [[ -z "${DATA_ROOT}" ]]; then DATA_ROOT="${SSD_MOUNT}/rosbags"; fi
+if [[ -z "${DATA_ROOT}" ]]; then
+  DATA_ROOT="$(prompt_value DATA_ROOT "rosbag 写入 SSD 的目录" "${SSD_MOUNT}/rosbags")" || exit 74
+  save_config_value DATA_ROOT "${DATA_ROOT}"
+fi
 if [[ ! "${ROBOT_ID}" =~ ^[A-Za-z0-9_.-]+$ ]]; then
   echo "ROBOT_ID may contain only letters, digits, dot, underscore, and dash." >&2
   exit 64
@@ -454,9 +469,13 @@ fi
 
 mkdir -p "${DATA_ROOT}"
 mkdir -p "${DATA_ROOT}/${ROBOT_ID}"
-session="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+session="$(date +%Y_%m%d_%H_%M)"
 output="${DATA_ROOT}/${ROBOT_ID}/${session}"
-[[ ! -e "${output}" ]] || { echo "Refusing to overwrite ${output}." >&2; exit 73; }
+suffix=2
+while [[ -e "${output}" ]]; do
+  output="${DATA_ROOT}/${ROBOT_ID}/${session}_$(printf '%02d' "${suffix}")"
+  ((suffix += 1))
+done
 echo "Preflight passed: ROS ${ROS_SETUP##*/}, domain ${ROS_DOMAIN_ID}, ${#topics[@]} whitelisted topics, SSD free ${available_bytes} bytes."
 if [[ "${clock_sync}" != "yes" ]]; then echo "WARNING: system clock synchronization is not confirmed; verify sensor/host time alignment." >&2; fi
 if ((${#missing_topics[@]})); then echo "WARNING: missing contract topics: ${missing_topics[*]}" >&2; fi
