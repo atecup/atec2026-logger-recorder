@@ -1,0 +1,19 @@
+# ROS 2 / colcon generated files
+/build/
+/install/
+/log/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Local configuration and credentials
+/.aws/
+/.codex/
+/.agents/
+
+# Recorded ROS bag data
+*.mcap
+*.db3
+*.db3-shm
+*.db3-wal

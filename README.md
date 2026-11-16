@@ -1,35 +1,74 @@
-# RobotLogger Recorder（选手发布包）
-本包只包含官方侧的ROS2 topic检查、rosbag2录制和录后审计工具。选手负责实现并运行 adapter，按 "recordlist.md" 发布约定的ROS2 topics
+# RobotLogger Recorder
+
+订阅 adapter 发布的 ROS 2 消息，定频写入 rosbag2。
+
+- [消息规范](recordlist.md)
+- [数据说明模板](templates/data_description.md)：填写后放在 adapter 目录，随 bag 交付。
 
 ## 目录
+
+```text
 robotlogger-recorder/
 ├── README.md
 ├── recordlist.md
+├── interfaces/
+│   └── robotlogger_interfaces/   # 状态消息接口
+├── templates/
+│   └── data_description.md
 ├── deployment/
 │   ├── robotlogger.sh
 │   └── topics.regex
 └── tools/
+    ├── timer_recorder.py
     └── audit_bag.py
-请保留目录结构：录制脚本按相对路径读取 topic 白名单，录后审计也会调用 "tools/audit_bag.py"。
+```
+
+请保留目录结构，脚本按相对路径读取白名单并调用录制、审计工具。
 
 ## 环境要求
-- x86_64 Linux机器人，已安装并能运行ROS2和rosbag2。
-- 机器人adapter已启动，并按recordlist.md发布topic。
-- 如使用自定义ROS消息，消息接口包需为机器人正在使用的ROS2发行版构建并安装；首次检查时按提示提供它的install/setup.bash路径。
-- SSD已挂载。若录制目录没有写权限，脚本会提示使用sudo。
 
-## 检查与录制
-将整个robotlogger-recorder目录复制到机器人任意可访问的位置，然后运行：
-cd /path/to/robotlogger-recorder
-deployment/robotlogger.sh check
-deployment/robotlogger.sh
+- Linux 机器人，安装与系统和 CPU 架构匹配的 ROS 2、rosbag2 和 colcon。
+- Python 3 可导入 `rclpy`、`rosbag2_py`、`rosidl_runtime_py`。
+- adapter 按 [recordlist.md](recordlist.md) 发布消息，状态接口需在机器人使用的 ROS 2 环境中编译。
+- 使用挂载盘时须提前挂载；保存目录没有写权限时，脚本会提示使用 sudo。
 
-脚本会发现ROS2安装和可用的RMW，并检查SSD、空间和合同topic。首次运行时会提示确认ROS_DOMAIN_ID、SSD挂载目录和rosbag写入目录；例如可将挂载目录设为 `/mnt/robot-ssd`，写入目录设为 `/mnt/robot-ssd/rosbags`。robotlogger-recorder本身可以放在SSD以外的任意目录。提示项保存在当前用户的 `~/.config/robotlogger/robotlogger.conf`，下次运行会复用；需要改变时可编辑该文件或通过命令行参数覆盖。
+## 编译接口
 
-固定名称的合同 topic（如 `/cmd_vel`、`/global_pose`）即使尚未启动，也不会让 `check` 失败；rosbag2 会每秒等待并订阅它们。topic 暂停时 bag 保持运行，同名、同类型且 QoS 兼容的 publisher 恢复后会继续收到消息。带设备 ID 的点云/图像 topic 若还未发布，脚本会提示输入完整名称并保存；也可用重复的 `--topic` 参数指定，例如 `deployment/robotlogger.sh record --topic /points_downsampled_mid360 --topic /image_compressed_front`。如果迟启动的状态 topic 使用自定义消息类型，首次提示时提供 adapter 的 `install/setup.bash`。
+加载对应 ROS 2 环境后，在仓库根目录编译状态接口：
 
-bag目录为：
-<用户指定的SSD写入目录>/<机器人主机名>/<本地时间>
+```bash
+source /opt/ros/jazzy/setup.bash  # 使用其他 ROS 2 发行版时替换 jazzy
+colcon build --base-paths interfaces --packages-select robotlogger_interfaces
+source install/setup.bash
+```
 
-时间目录格式为 `YYYY_MMDD_HH_MM`，例如 `2026_1114_15_54`。同一分钟内重复启动时会自动追加 `_02`、`_03` 等编号，避免覆盖已有bag。
-开始录制后按 "Ctrl-C" 正常结束并等待 rosbag2 完成收尾。
+## 录制
+
+在仓库根目录运行，按提示填写挂载地址和保存目录：
+
+```bash
+deployment/robotlogger.sh record
+```
+
+保存到本机目录：
+
+```bash
+deployment/robotlogger.sh record --data /保存目录
+```
+
+脚本会发现 ROS 2 安装和可用的 RMW，并检查保存目录及剩余空间。首次运行按提示确认 ROS_DOMAIN_ID、挂载地址和保存目录，例如 `/mnt/robot-ssd`、`/mnt/robot-ssd/rosbags`。工具本身可放在其他目录。配置保存在 `~/.config/robotlogger/robotlogger.conf`，下次复用，也可编辑配置或通过命令行参数覆盖。
+
+录制器持续每秒发现并订阅白名单话题，包括带设备 ID 的点云和图像。话题暂未发布时继续等待，暂停后恢复发布可继续录制，无需输入话题名称。按 Ctrl-C 结束并等待 bag 收尾。
+
+接口默认加载 `install/setup.bash`，其他工作空间用 `--workspace /路径/install/setup.bash` 指定。参数见 `deployment/robotlogger.sh --help`。
+
+bag 保存到 `<保存目录>/<机器人标识>/<YYYY_MMDD_HH_MM>/`。按规范频率记录最新样本，无新数据时不重复写入；bag 时间为写入时间，消息中的采样时间保持不变。
+
+## 查看与审计
+
+```bash
+deployment/robotlogger.sh info /path/to/bag
+deployment/robotlogger.sh audit /path/to/bag
+```
+
+审计支持 SQLite `.db3`，检查完整性、频率、消息间隔和时间戳；抽样跳过的 sequence 不代表传输丢包。

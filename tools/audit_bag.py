@@ -19,14 +19,34 @@ from pathlib import Path
 
 EXPECTED_HZ = {
     "/global_pose": 20.0,
+    "/imu/data_raw": 20.0,
     "/cmd_vel": 20.0,
     "/joint_states": 20.0,
     "/robot_state": 20.0,
     "/nav_state": 20.0,
     "/motion_state": 20.0,
-    "/grasp_state": 20.0,
     "/manipulation_state": 20.0,
 }
+
+
+EXPECTED_TYPES = {
+    "/global_pose": "geometry_msgs/msg/PoseStamped",
+    "/imu/data_raw": "sensor_msgs/msg/Imu",
+    "/cmd_vel": "geometry_msgs/msg/Twist",
+    "/joint_states": "sensor_msgs/msg/JointState",
+    "/robot_state": "robotlogger_interfaces/msg/RobotState",
+    "/nav_state": "robotlogger_interfaces/msg/NavState",
+    "/motion_state": "robotlogger_interfaces/msg/MotionState",
+    "/manipulation_state": "robotlogger_interfaces/msg/ManipulationState",
+}
+
+
+def expected_type(topic):
+    if topic.startswith("/points_downsampled_"):
+        return "sensor_msgs/msg/PointCloud2"
+    if topic.startswith("/image_compressed_"):
+        return "sensor_msgs/msg/CompressedImage"
+    return EXPECTED_TYPES.get(topic)
 
 
 def expected_hz(topic):
@@ -57,7 +77,7 @@ def main():
     if not bag.is_dir():
         parser.error(f"bag directory does not exist: {bag}")
     try:
-        active = subprocess.run(["pgrep", "-af", "[r]os2 bag record"],
+        active = subprocess.run(["pgrep", "-af", "[r]os2 bag record|[t]imer_recorder.py"],
                                 text=True, capture_output=True, check=False)
     except FileNotFoundError:
         active = None
