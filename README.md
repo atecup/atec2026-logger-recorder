@@ -74,3 +74,13 @@ deployment/robotlogger.sh audit /path/to/bag
 ```
 
 审计支持 SQLite `.db3`，检查完整性、频率、消息间隔和时间戳；抽样跳过的 sequence 不代表传输丢包。
+
+## 测试与参赛说明
+
+以下为基于 G1 本体的测试结果，供选手参考：
+
+![G1 本体 rosbag 负载测试对比](docs/images/g1-comparison.svg)
+
+选手需自行编写 adapter，并测试、调整其 CPU、内存等资源占用。组委会将提供三星 T7 Shield 1TB 移动固态硬盘作为挂载存储选项，选手可自行选择将数据保存在本机或挂载盘上。
+
+请选手们尽早完成测试与调整，如有问题可联系组委会。

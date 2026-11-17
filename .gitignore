@@ -8,6 +8,7 @@ __pycache__/
 *.py[cod]
 
 # Local configuration and credentials
+/.vscode/
 /.aws/
 /.codex/
 /.agents/
