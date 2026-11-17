@@ -1,6 +1,6 @@
 # RobotLogger Recorder
 
-订阅 adapter 发布的 ROS 2 消息，定频写入 rosbag2。
+订阅 adapter 发布的 ROS 2 消息，使用 ROS 2 自带 `ros2 bag record` 写入 rosbag2。
 
 - [消息规范](recordlist.md)
 - [数据说明模板](templates/data_description.md)：填写后放在 adapter 目录，随 bag 交付。
@@ -19,7 +19,6 @@ robotlogger-recorder/
 │   ├── robotlogger.sh
 │   └── topics.regex
 └── tools/
-    ├── timer_recorder.py
     └── audit_bag.py
 ```
 
@@ -28,7 +27,8 @@ robotlogger-recorder/
 ## 环境要求
 
 - Linux 机器人，安装与系统和 CPU 架构匹配的 ROS 2、rosbag2 和 colcon。
-- Python 3 可导入 `rclpy`、`rosbag2_py`、`rosidl_runtime_py`。
+- 安装与 ROS 2 发行版匹配的 `rosbag2` CLI 和存储插件。
+- `audit` 的消息头时间戳分析需要 Python 3 可导入 `rclpy` 和 `rosidl_runtime_py`。
 - adapter 按 [recordlist.md](recordlist.md) 发布消息，状态接口需在机器人使用的 ROS 2 环境中编译。
 - 使用挂载盘时须提前挂载；保存目录没有写权限时，脚本会提示使用 sudo。
 
@@ -58,11 +58,13 @@ deployment/robotlogger.sh record --data /保存目录
 
 脚本会发现 ROS 2 安装和可用的 RMW，并检查保存目录及剩余空间。首次运行按提示确认 ROS_DOMAIN_ID、挂载地址和保存目录，例如 `/mnt/robot-ssd`、`/mnt/robot-ssd/rosbags`。工具本身可放在其他目录。配置保存在 `~/.config/robotlogger/robotlogger.conf`，下次复用，也可编辑配置或通过命令行参数覆盖。
 
-录制器持续每秒发现并订阅白名单话题，包括带设备 ID 的点云和图像。话题暂未发布时继续等待，暂停后恢复发布可继续录制，无需输入话题名称。按 Ctrl-C 结束并等待 bag 收尾。
+脚本用 ROS graph 检查启动时已发布的话题和消息类型，然后将合同固定话题以及已配置的点云/图像 topic 名称传给 `ros2 bag record`。固定名称可以在录制启动后再出现，topic publisher 暂停后恢复也会继续写入。点云和图像含设备 ID；如果 publisher 尚未启动且 topic 名称未知，首次运行时输入其名称，脚本会保存供下次使用。ROS Foxy 的 `rosbag2` CLI 不提供 topic 正则过滤，因此无法在录制开始后自动纳入任意未知 ID 的新 topic。
 
 接口默认加载 `install/setup.bash`，其他工作空间用 `--workspace /路径/install/setup.bash` 指定。参数见 `deployment/robotlogger.sh --help`。
 
-bag 保存到 `<保存目录>/<机器人标识>/<YYYY_MMDD_HH_MM>/`。按规范频率记录最新样本，无新数据时不重复写入；bag 时间为写入时间，消息中的采样时间保持不变。
+`ros2 bag record` 会记录收到的每一条消息，不会在 recorder 内做 20 Hz/1 Hz 抽样。adapter 应按 `recordlist.md` 的目标频率发布；若来源频率更高，adapter 应在独立进程中限频。无新消息时不会重复写入。bag 保存到 `<保存目录>/<机器人标识>/<YYYY_MMDD_HH_MM>/`；bag 时间为写入时间，消息中的采样时间保持不变。
+
+启动时已发布 topic 若类型与合同不符，脚本会警告并跳过该名称。迟启动 topic 的类型只能在 bag 结束后由 `audit` 检出；Foxy CLI 不支持按 topic 类型动态过滤，adapter 必须遵守合同类型。
 
 ## 查看与审计
 
