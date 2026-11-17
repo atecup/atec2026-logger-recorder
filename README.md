@@ -1,5 +1,7 @@
 # RobotLogger Recorder
 
+当前版本：**v1.0**。
+
 订阅 adapter 发布的 ROS 2 消息，使用 ROS 2 自带 `ros2 bag record` 写入 rosbag2。
 
 - [消息规范](recordlist.md)
@@ -73,7 +75,9 @@ deployment/robotlogger.sh info /path/to/bag
 deployment/robotlogger.sh audit /path/to/bag
 ```
 
-审计支持 SQLite `.db3`，检查完整性、频率、消息间隔和时间戳；抽样跳过的 sequence 不代表传输丢包。
+审计仅支持 SQLite `.db3`，检查完整性、频率、消息间隔和时间戳；抽样跳过的 sequence 不代表传输丢包。其他存储插件生成的格式（如 MCAP）不支持使用当前 `audit` 工具审计。
+
+已有 `ros2 bag record` 进程时会拒绝启动新的录制，即使该进程录制的是其他话题。已有自用录包程序的队伍，请提前检查兼容性，避免进程冲突。
 
 ## 测试与参赛说明
 

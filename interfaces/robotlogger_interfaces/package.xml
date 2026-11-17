@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>robotlogger_interfaces</name>
-  <version>0.1.0</version>
+  <version>1.0.0</version>
   <description>Fixed RobotLogger competition state interfaces.</description>
   <maintainer email="robotlogger@example.com">RobotLogger maintainers</maintainer>
   <license>Proprietary</license>

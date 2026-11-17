@@ -2,20 +2,22 @@
 
 消息类型、字段和单位固定。设备 ID 由选手填写；坐标系、数据来源和数字含义按[数据说明模板](templates/data_description.md)说明，并随 bag 交付。
 
-| Topic | 消息类型 | 录制频率 | 要求 |
+| Topic | 消息类型 | 目标发布/录制频率 | 要求 |
 |---|---|---|---|
 | `/global_pose` | `geometry_msgs/msg/PoseStamped` | 20 Hz | 必填 |
 | `/imu/data_raw` | `sensor_msgs/msg/Imu` | 20 Hz | 必填 |
 | `/cmd_vel` | `geometry_msgs/msg/Twist` | 20 Hz | 必填 |
 | `/joint_states` | `sensor_msgs/msg/JointState` | 20 Hz | 必填 |
-| `/points_downsampled_{lidar_id}` | `sensor_msgs/msg/PointCloud2` | 1 Hz | 必填 |
-| `/image_compressed_{cam_id}` | `sensor_msgs/msg/CompressedImage` | 1 Hz | 必填 |
+| `/points_downsampled_{lidar_id}` | `sensor_msgs/msg/PointCloud2` | 1 Hz | 使用雷达时必填 |
+| `/image_compressed_{cam_id}` | `sensor_msgs/msg/CompressedImage` | 1 Hz | 使用视觉时必填 |
 | `/robot_state` | `robotlogger_interfaces/msg/RobotState` | 20 Hz | 必填 |
 | `/nav_state` | `robotlogger_interfaces/msg/NavState` | 20 Hz | 选填 |
 | `/motion_state` | `robotlogger_interfaces/msg/MotionState` | 20 Hz | 选填 |
 | `/manipulation_state` | `robotlogger_interfaces/msg/ManipulationState` | 20 Hz | 选填 |
 
-发布频率应不低于录制频率；无新数据时不重复录制。IMU 的 20 Hz 为抽样记录，不完整保留高频振动。
+adapter 应按上表目标频率发布，高频源须在独立进程中的 adapter 内限频，无新数据时不重复发布旧样本。录制器记录收到的每条消息，不再降采样；IMU 的 20 Hz 抽样不完整保留高频振动。
+
+未使用雷达或视觉的队伍，无需发布对应的点云或图像话题，也无需发布空消息；请在数据说明中注明未使用的传感器及原因。使用对应传感器时，须按上表提供数据。
 
 ## 通用约定
 
