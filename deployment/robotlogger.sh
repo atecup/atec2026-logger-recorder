@@ -227,7 +227,7 @@ fi
 
 if [[ "${action}" == "status" ]]; then
   echo "Active recorder:"
-  pgrep -af 'ros2 bag record|[t]imer_recorder.py' || true
+  pgrep -af '[r]os2 bag record' || true
   echo "Recent bag folders:"
   if [[ -d "${DATA_ROOT}/${ROBOT_ID}" ]]; then ls -lt "${DATA_ROOT}/${ROBOT_ID}" | head -8; else echo "None yet."; fi
   exit 0
@@ -300,10 +300,6 @@ available_bytes="$(df -P -B1 "${storage_probe}" | awk 'NR == 2 {print $4}')"
 (( available_bytes >= MIN_FREE_BYTES )) || { echo "Destination disk has only ${available_bytes} bytes free; minimum is ${MIN_FREE_BYTES}." >&2; exit 75; }
 
 command -v ros2 >/dev/null 2>&1 || { echo "ros2 command is missing after sourcing ROS." >&2; exit 69; }
-python3 -c 'import rclpy, rosbag2_py, rosidl_runtime_py' || {
-  echo "Timer recorder needs rclpy, rosbag2_py and rosidl_runtime_py in python3." >&2
-  exit 69
-}
 topic_regex="$(grep -Ev '^[[:space:]]*(#|$)' "${TOPIC_REGEX_FILE}" | paste -sd '|' -)"
 expected_topics=()
 if [[ -n "${EXPECTED_TOPICS}" ]]; then read -r -a expected_topics <<<"${EXPECTED_TOPICS}"; fi
@@ -316,90 +312,131 @@ for expected_topic in "${expected_topics[@]}"; do
 done
 EXPECTED_TOPICS="${expected_topics[*]}"
 
-# Recording does its own continuous discovery; publishers may start later.
+expected_type_for_topic() {
+  case "$1" in
+    /global_pose) echo geometry_msgs/msg/PoseStamped ;;
+    /imu/data_raw) echo sensor_msgs/msg/Imu ;;
+    /cmd_vel) echo geometry_msgs/msg/Twist ;;
+    /joint_states) echo sensor_msgs/msg/JointState ;;
+    /robot_state) echo robotlogger_interfaces/msg/RobotState ;;
+    /nav_state) echo robotlogger_interfaces/msg/NavState ;;
+    /motion_state) echo robotlogger_interfaces/msg/MotionState ;;
+    /manipulation_state) echo robotlogger_interfaces/msg/ManipulationState ;;
+    /points_downsampled_*) echo sensor_msgs/msg/PointCloud2 ;;
+    /image_compressed_*) echo sensor_msgs/msg/CompressedImage ;;
+    *) return 1 ;;
+  esac
+}
+
+# Use rosbag2's supported CLI recorder. Explicit names remain subscribed while
+# publishers pause and resume; fixed names also wait for a late publisher.
 topics=()
+wrong_topics=()
 missing_topics=()
-if [[ "${action}" == check ]]; then
-  topic_tmp="/tmp/robotlogger-topics.$$.txt"
-  dds_err="/tmp/robotlogger-dds.$$.err"
-  query_ros_graph() {
-    if timeout 12s ros2 topic list >"${topic_tmp}" 2>"${dds_err}"; then return 0; fi
-    return 1
-  }
-  load_matching_topics() {
-    mapfile -t topics < <(grep -E "${topic_regex}" "${topic_tmp}" | sort -u)
-  }
-  if ! query_ros_graph; then
-    if (( interactive )); then
+topic_tmp="/tmp/robotlogger-topics.$$.txt"
+dds_err="/tmp/robotlogger-dds.$$.err"
+query_ros_graph() {
+  timeout 12s ros2 topic list >"${topic_tmp}" 2>"${dds_err}"
+}
+if ! query_ros_graph; then
+  if (( interactive )); then
+    cat "${dds_err}" >&2 || true
+    ROS_DOMAIN_ID="$(prompt_value ROS_DOMAIN_ID "机器人 ROS_DOMAIN_ID" "${ROS_DOMAIN_ID}")" || exit 70
+    [[ "${ROS_DOMAIN_ID}" =~ ^[0-9]+$ ]] && (( ROS_DOMAIN_ID <= 232 )) || {
+      echo "ROS_DOMAIN_ID must be an integer from 0 to 232." >&2
+      exit 64
+    }
+    export ROS_DOMAIN_ID
+    save_config_value ROS_DOMAIN_ID "${ROS_DOMAIN_ID}"
+    if ! query_ros_graph; then
       cat "${dds_err}" >&2 || true
-      ROS_DOMAIN_ID="$(prompt_value ROS_DOMAIN_ID "机器人 ROS_DOMAIN_ID" "${ROS_DOMAIN_ID}")" || exit 70
-      export ROS_DOMAIN_ID
-      save_config_value ROS_DOMAIN_ID "${ROS_DOMAIN_ID}"
+      RMW_IMPLEMENTATION="$(prompt_value RMW_IMPLEMENTATION "RMW 实现（如 rmw_cyclonedds_cpp）" "${RMW_IMPLEMENTATION}")" || exit 70
+      export RMW_IMPLEMENTATION
+      save_config_value RMW_IMPLEMENTATION "${RMW_IMPLEMENTATION}"
       if ! query_ros_graph; then
         cat "${dds_err}" >&2 || true
-        RMW_IMPLEMENTATION="$(prompt_value RMW_IMPLEMENTATION "RMW 实现（如 rmw_cyclonedds_cpp）" "${RMW_IMPLEMENTATION}")" || exit 70
-        export RMW_IMPLEMENTATION
-        save_config_value RMW_IMPLEMENTATION "${RMW_IMPLEMENTATION}"
-        query_ros_graph || { cat "${dds_err}" >&2 || true; echo "DDS discovery still failed. Check the ROS installation and DDS interface configuration." >&2; exit 70; }
+        echo "DDS discovery still failed. Check the ROS installation and DDS interface configuration." >&2
+        exit 70
       fi
-    else
-      cat "${dds_err}" >&2 || true
-      rm -f "${topic_tmp}" "${dds_err}"
-      echo "DDS discovery failed. Set ROS_DOMAIN_ID/RMW in ${config_path} or run from an interactive terminal to configure them." >&2
-      exit 70
     fi
+  else
+    cat "${dds_err}" >&2 || true
+    rm -f "${topic_tmp}" "${dds_err}"
+    echo "DDS discovery failed. Set ROS_DOMAIN_ID/RMW in ${config_path} or run from an interactive terminal to configure them." >&2
+    exit 70
   fi
-  load_matching_topics
-  if (( ${#topics[@]} == 0 )); then
-    echo "No whitelisted topics are advertised yet in ROS_DOMAIN_ID=${ROS_DOMAIN_ID}; fixed contract topics can still be discovered after recording starts." >&2
-    if [[ -s "${topic_tmp}" ]]; then
-      echo "Currently visible ROS topics:" >&2
-      sed 's/^/  /' "${topic_tmp}" >&2
-    fi
-  fi
-  rm -f "${topic_tmp}" "${dds_err}"
-
-  declare -A seen_types=()
-  check_message_types() {
-    unresolved_types=()
-    seen_types=()
-    for topic in "${topics[@]}"; do
-      msg_type="$(timeout 4s ros2 topic type "${topic}" 2>/dev/null || true)"
-      if [[ -z "${msg_type}" ]]; then unresolved_types+=("${topic} (type unavailable)"); continue; fi
-      [[ -z "${seen_types[${msg_type}]+x}" ]] || continue
-      seen_types["${msg_type}"]=1
-      if ! ros2 interface show "${msg_type}" >/dev/null 2>&1; then unresolved_types+=("${msg_type}"); fi
-    done
-  }
-  check_message_types
-  if ((${#unresolved_types[@]})); then
-    printf 'Interface type support missing for: %s\n' "${unresolved_types[*]}" >&2
-    if [[ -n "${ROS_WORKSPACE_SETUP}" ]]; then
-      echo "Current workspace did not provide these message definitions: ${ROS_WORKSPACE_SETUP}" >&2
-    fi
-    ROS_WORKSPACE_SETUP="$(prompt_value ROS_WORKSPACE_SETUP "选手 adapter 编译后的 install/setup.bash 路径" "${ROS_WORKSPACE_SETUP}")" || exit 66
-    [[ -r "${ROS_WORKSPACE_SETUP}" ]] || { echo "Interface workspace is unreadable: ${ROS_WORKSPACE_SETUP}" >&2; exit 66; }
-    source_workspace_setup
-    save_config_value ROS_WORKSPACE_SETUP "${ROS_WORKSPACE_SETUP}"
-    check_message_types
-    if ((${#unresolved_types[@]})); then
-      echo "Still missing interface types: ${unresolved_types[*]}. Build/install the team's interface package, then retry." >&2
-      exit 66
-    fi
-  fi
-
-  missing_topics=()
-  for must in /global_pose /imu/data_raw /cmd_vel /joint_states /robot_state; do
-    if ! printf '%s\n' "${topics[@]}" | grep -Fxq "${must}"; then missing_topics+=("${must}"); fi
-  done
-  if ! printf '%s\n' "${topics[@]}" | grep -Eq '^/points_downsampled_[^/]+$'; then
-    missing_topics+=("/points_downsampled_<id>")
-  fi
-  if ! printf '%s\n' "${topics[@]}" | grep -Eq '^/image_compressed_[^/]+$'; then
-    missing_topics+=("/image_compressed_<id>")
-  fi
-
 fi
+mapfile -t topics < <(grep -E "${topic_regex}" "${topic_tmp}" | sort -u)
+valid_topics=()
+for topic in "${topics[@]}"; do
+  expected_type="$(expected_type_for_topic "${topic}")"
+  actual_type="$(timeout 4s ros2 topic type "${topic}" 2>/dev/null || true)"
+  if [[ -n "${actual_type}" && "${actual_type}" != "${expected_type}" ]]; then
+    echo "WARNING: ${topic} has type ${actual_type}; expected ${expected_type}. Skipping this active topic." >&2
+    wrong_topics+=("${topic}")
+  elif [[ -z "${actual_type}" ]]; then
+    echo "WARNING: could not determine type for ${topic}; skipping it for this run." >&2
+    wrong_topics+=("${topic}")
+  else
+    valid_topics+=("${topic}")
+  fi
+done
+topics=("${valid_topics[@]}")
+rm -f "${topic_tmp}" "${dds_err}"
+
+if [[ "${action}" == check || "${action}" == record ]]; then
+  has_lidar=0
+  has_camera=0
+  if printf '%s\n' "${topics[@]}" "${expected_topics[@]}" | grep -Eq '^/points_downsampled_[^/]+$'; then has_lidar=1; fi
+  if printf '%s\n' "${topics[@]}" "${expected_topics[@]}" | grep -Eq '^/image_compressed_[^/]+$'; then has_camera=1; fi
+  if (( (!has_lidar || !has_camera) && interactive )); then
+    echo "传感器 topic 含设备 ID；publisher 尚未出现时无法自动推断名称。" >&2
+    printf '输入迟启动的雷达/相机 topic 名称（空格分隔；如 /points_downsampled_mid360 /image_compressed_front；不填则只等待已配置名称）: ' >&2
+    IFS= read -r -a prompted_topics || prompted_topics=()
+    for expected_topic in "${prompted_topics[@]}"; do
+      [[ "${expected_topic}" =~ ^/[A-Za-z0-9_/]+$ ]] && grep -Eq "${topic_regex}" <<<"${expected_topic}" || {
+        echo "Topic is invalid or outside the official whitelist: ${expected_topic}" >&2
+        exit 64
+      }
+    done
+    if ((${#prompted_topics[@]})); then
+      expected_topics+=("${prompted_topics[@]}")
+      mapfile -t expected_topics < <(printf '%s\n' "${expected_topics[@]}" | sort -u)
+      save_config_value EXPECTED_TOPICS "${expected_topics[*]}"
+    fi
+  fi
+fi
+EXPECTED_TOPICS="${expected_topics[*]}"
+
+# rosbag2 needs type support for custom topics that may start after recording.
+custom_interfaces=(
+  robotlogger_interfaces/msg/RobotState robotlogger_interfaces/msg/NavState
+  robotlogger_interfaces/msg/MotionState robotlogger_interfaces/msg/ManipulationState
+)
+missing_interfaces=()
+for msg_type in "${custom_interfaces[@]}"; do
+  ros2 interface show "${msg_type}" >/dev/null 2>&1 || missing_interfaces+=("${msg_type}")
+done
+if ((${#missing_interfaces[@]})); then
+  printf 'Interface type support missing for late state topics: %s\n' "${missing_interfaces[*]}" >&2
+  ROS_WORKSPACE_SETUP="$(prompt_value ROS_WORKSPACE_SETUP "编译好的 robotlogger_interfaces install/setup.bash 路径" "${ROS_WORKSPACE_SETUP}")" || exit 66
+  [[ -r "${ROS_WORKSPACE_SETUP}" ]] || { echo "Interface workspace is unreadable: ${ROS_WORKSPACE_SETUP}" >&2; exit 66; }
+  source_workspace_setup
+  save_config_value ROS_WORKSPACE_SETUP "${ROS_WORKSPACE_SETUP}"
+  for msg_type in "${custom_interfaces[@]}"; do
+    ros2 interface show "${msg_type}" >/dev/null 2>&1 || {
+      echo "Still missing ${msg_type}; build and source robotlogger_interfaces before recording." >&2
+      exit 66
+    }
+  done
+fi
+
+required_topics=(/global_pose /imu/data_raw /cmd_vel /joint_states /robot_state)
+for must in "${required_topics[@]}"; do
+  if ! printf '%s\n' "${topics[@]}" | grep -Fxq "${must}"; then missing_topics+=("${must}"); fi
+done
+if ! printf '%s\n' "${topics[@]}" "${expected_topics[@]}" | grep -Eq '^/points_downsampled_[^/]+$'; then missing_topics+=("/points_downsampled_<id>"); fi
+if ! printf '%s\n' "${topics[@]}" "${expected_topics[@]}" | grep -Eq '^/image_compressed_[^/]+$'; then missing_topics+=("/image_compressed_<id>"); fi
 
 clock_sync="unknown"
 if command -v timedatectl >/dev/null 2>&1; then
@@ -442,7 +479,7 @@ if [[ "${action}" == "record" && "${EUID}" -ne 0 && "${as_root}" -eq 0 && "${nee
   exec sudo "${sudo_args[@]}" "${script_path}" __root_record
 fi
 
-if pgrep -af '[r]os2 bag record|[t]imer_recorder.py' >/dev/null; then
+if pgrep -af '[r]os2 bag record' >/dev/null; then
   echo "A rosbag recorder is already running. Use the existing session; refusing to start a second recorder." >&2
   exit 73
 fi
@@ -459,13 +496,49 @@ done
 echo "Recorder environment ready: ROS ${ROS_SETUP##*/}, domain ${ROS_DOMAIN_ID}, destination disk free ${available_bytes} bytes."
 if [[ "${clock_sync}" != "yes" ]]; then echo "WARNING: system clock synchronization is not confirmed; verify sensor/host time alignment." >&2; fi
 echo "Recording to ${output} (Ctrl-C closes the bag cleanly)."
-echo "Waiting for adapter topics; matching topics will be subscribed automatically."
+echo "Recording with ros2 bag record; fixed names and configured sensor IDs will wait for publishers."
 
-# The timer recorder discovers whitelisted topics continuously, including late sensors.
-python3 "${project_dir}/tools/timer_recorder.py" \
-  --output "${output}" --storage "${STORAGE_ID}" \
-  --split-bytes "${SPLIT_BYTES}" --max-cache-size "${MAX_CACHE_SIZE}" \
-  --regex "${topic_regex}" &
+fixed_contract_topics=(
+  /global_pose /imu/data_raw /cmd_vel /joint_states /robot_state
+  /nav_state /motion_state /manipulation_state
+)
+record_topics=()
+declare -A seen_record_topics=()
+for topic in "${topics[@]}" "${fixed_contract_topics[@]}" "${expected_topics[@]}"; do
+  [[ -n "${topic}" ]] || continue
+  if printf '%s\n' "${wrong_topics[@]}" | grep -Fxq "${topic}"; then continue; fi
+  if [[ -z "${seen_record_topics[${topic}]+x}" ]]; then
+    record_topics+=("${topic}")
+    seen_record_topics["${topic}"]=1
+  fi
+done
+
+record_help="$(ros2 bag record -h 2>&1 || true)"
+record_args=(bag record)
+if grep -q -- '--storage' <<<"${record_help}"; then
+  record_args+=(--storage "${STORAGE_ID}")
+else
+  echo "WARNING: this rosbag2 version has no --storage option; using its default storage plugin." >&2
+fi
+if grep -q -- '--max-cache-size' <<<"${record_help}"; then
+  record_args+=(--max-cache-size "${MAX_CACHE_SIZE}")
+else
+  echo "WARNING: this rosbag2 version has no --max-cache-size option; its default cache will be used." >&2
+fi
+if grep -q -- '--max-bag-size' <<<"${record_help}"; then
+  record_args+=(--max-bag-size "${SPLIT_BYTES}")
+else
+  echo "WARNING: this rosbag2 version has no --max-bag-size option; disk free-space guard remains active, but size splitting is unavailable." >&2
+fi
+if grep -q -- '--polling-interval' <<<"${record_help}"; then
+  record_args+=(--polling-interval 1000)
+fi
+if ! grep -q -- '--output' <<<"${record_help}"; then
+  echo "This rosbag2 version does not expose --output; cannot safely choose the destination path." >&2
+  exit 69
+fi
+record_args+=(--output "${output}" "${record_topics[@]}")
+ros2 "${record_args[@]}" &
 recorder_pid=$!
 stop_recorder() {
   if kill -0 "${recorder_pid}" 2>/dev/null; then

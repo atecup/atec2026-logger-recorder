@@ -77,7 +77,7 @@ def main():
     if not bag.is_dir():
         parser.error(f"bag directory does not exist: {bag}")
     try:
-        active = subprocess.run(["pgrep", "-af", "[r]os2 bag record|[t]imer_recorder.py"],
+        active = subprocess.run(["pgrep", "-af", "[r]os2 bag record"],
                                 text=True, capture_output=True, check=False)
     except FileNotFoundError:
         active = None
@@ -133,6 +133,15 @@ def main():
 
     print(f"Bag: {bag}")
     print(f"Storage files: {len(db_files)}")
+    type_mismatches = [
+        (name, actual, expected_type(name))
+        for name, actual in topics.items()
+        if expected_type(name) is not None and actual != expected_type(name)
+    ]
+    if type_mismatches:
+        print("WARNING: topic type does not match recordlist:")
+        for name, actual, expected in type_mismatches:
+            print(f"  {name}: bag has {actual}; expected {expected}")
     check_name = "integrity_check" if args.full_integrity else "quick_check"
     print(f"SQLite {check_name}:")
     for db_path, results in integrity_rows:
